@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  SSHKey:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+Resources:
+  VPC01USEast:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+  EC2SUBNETAPP01:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC01USEast
+      AvailabilityZone: us-east-1a
+      CidrBlock: 10.0.0.0/24
+  EC2SUBNETDB01:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC01USEast
+      AvailabilityZone: us-east-1b
+      CidrBlock: 10.0.1.0/24
+  EC2SecuritygrpDB:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: SSH and DB
+      VpcId: !Ref VPC01USEast
+      SecurityGroupIngress:
+        - CidrIp: 10.0.0.0/24
+          FromPort: 22
+          IpProtocol: tcp
+          ToPort: 22
+        - CidrIp: 10.0.0.0/24
+          FromPort: 1434
+          IpProtocol: tcp
+          ToPort: 1434
+  EC2SecuritygrpICMP:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: icmp port
+      VpcId: !Ref VPC01USEast
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 8
+          ToPort: -1
+          IpProtocol: icmp
+  EC2SecuritygrpApp:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: SSH and HTTP
+      VpcId: !Ref VPC01USEast
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 22
+          IpProtocol: tcp
+          ToPort: 22
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          IpProtocol: tcp
+          ToPort: 80
+  EC2EIP4App01:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      InstanceId: !Ref EC2APP01
+  EC2DiskAPP01:
+    Type: 'AWS::EC2::Volume'
+    Properties:
+      Encrypted: true
+      KmsKeyId: alias/aws/ebs
+      Size: 10
+      VolumeType: gp3
+      AvailabilityZone: !GetAtt EC2SUBNETAPP01.AvailabilityZone
+  EC2DiskDB01:
+    Type: 'AWS::EC2::Volume'
+    Properties:
+      Encrypted: true
+      KmsKeyId: alias/aws/ebs
+      Size: 10
+      VolumeType: gp2
+      AvailabilityZone: !GetAtt EC2SUBNETDB01.AvailabilityZone
+  EC2APP01:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone: !GetAtt EC2SUBNETAPP01.AvailabilityZone
+      ImageId: ami-009d6802948d06e52
+      InstanceType: t2.micro
+      NetworkInterfaces:
+        - SubnetId: !Ref EC2SUBNETAPP01
+          DeviceIndex: 0
+          GroupSet:
+            - !Ref EC2SecuritygrpApp
+            - !Ref EC2SecuritygrpICMP
+      KeyName: !Ref SSHKey
+      BlockDeviceMappings:
+      - DeviceName: /dev/sdm
+        Ebs:
+          VolumeType: gp2
+          DeleteOnTermination: true
+          VolumeSize: 10
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash -xe
+          yum update -y
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "Hello World from user data" > /var/www/html/index.html
+  EC2DBSQL:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone: !GetAtt EC2SUBNETDB01.AvailabilityZone
+      ImageId: ami-009d6802948d06e52
+      InstanceType: t2.micro
+      NetworkInterfaces:
+        - SubnetId: !Ref EC2SUBNETDB01
+          DeviceIndex: 0
+          GroupSet:
+            - !Ref EC2SecuritygrpDB
+            - !Ref EC2SecuritygrpICMP
+      KeyName: !Ref SSHKey
+      BlockDeviceMappings:
+      - DeviceName: /dev/sdh
+        Ebs:
+          VolumeType: io1
+          DeleteOnTermination: true
+          VolumeSize: 10
+          Iops: 100
+  myRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC01USEast
+  MyRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref myRouteTable
+      NatGatewayId: !Ref EC2NatGateway01
+  EC2EIPNAT01:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: VPC01USEast
+  EC2NatGateway01:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      AllocationId: !GetAtt EC2EIPNAT01.AllocationId
+      SubnetId: !Ref EC2SUBNETAPP01
+  InternetGateway01:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+      - Key: stack-type
+        Value: production-intgateway
+  EC2InternetGatAttch01:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway01
+      VpcId: !Ref VPC01USEast
